@@ -1,0 +1,953 @@
+---
+output:
+  word_document: default
+  html_document: default
+---
+```{r}
+# install needed libraries
+#install.packages("tidymodels")
+#install.packages("skimr")
+#install.packages("Metrics")
+```
+
+```{r}
+# Load the needed libraries
+library(tidyverse)
+library(tidymodels)
+library(glmnet)
+library(corrplot)
+library(skimr)
+library(randomForest)
+library(naivebayes)
+library(class)
+library(caret)
+library(e1071)
+library(xgboost)
+library(Metrics)
+```
+
+```{r}
+# Load Dataset
+stroke_dataset <- read.csv("healthcare-dataset-stroke-data.csv")
+```
+
+### Describe and explore the data
+
+```{r}
+# check data structure
+str(stroke_dataset)
+```
+
+```{r}
+stroke_dataset <- stroke_dataset[, -1]
+```
+
+```{r}
+# check for duplicated rows
+sum(duplicated(stroke_dataset))
+```
+```{r}
+# check for NA values
+colSums(is.na(stroke_dataset))
+```
+
+
+```{r}
+# Check for N/A values
+colSums(stroke_dataset == "N/A")
+```
+```{r}
+# convert bmi from character to numeric will change N/A to NA
+stroke_dataset$bmi <- as.numeric(stroke_dataset$bmi)
+```
+
+```{r}
+# check ever_married
+stroke_dataset %>% count(ever_married)
+```
+```{r}
+ggplot(stroke_dataset, aes(x = ever_married, fill = as.factor(stroke))) +
+  geom_bar(position = "fill") +
+  labs(fill = "STROKE")
+```
+
+```{r}
+ggplot(stroke_dataset, aes(x = ever_married, fill = as.factor(stroke))) +
+  geom_bar(position = "fill") +
+  labs(fill = "STROKE") +
+  facet_wrap(~gender)
+```
+
+
+```{r}
+stroke_dataset %>% group_by(ever_married, gender) %>% summarise( avg_age = mean(age))
+```
+
+
+```{r}
+stroke_dataset %>% 
+  filter (age > 49) %>% 
+ggplot(aes(x = ever_married, fill = as.factor(stroke))) +
+  geom_bar(position = "fill") +
+  labs(fill = "STROKE") +
+  facet_wrap(~gender)
+```
+
+
+```{r}
+ggplot(stroke_dataset, aes(x = work_type, fill = as.factor(stroke))) +
+  geom_bar(position ="fill") +
+  labs(fill = "STROKE") +
+  theme(axis.text.x = element_text(angle = 45))
+```
+
+
+```{r}
+ggplot(stroke_dataset, aes(x = work_type, fill = as.factor(stroke))) +
+  geom_bar(position ="fill") +
+  labs(fill = "STROKE") +
+  facet_wrap(~gender) +
+  theme(axis.text.x = element_text(angle = 45))
+```
+
+
+```{r}
+ggplot(stroke_dataset, aes(x = avg_glucose_level, fill = as.factor(stroke))) +
+  geom_histogram(position = "fill") +
+  labs(fill = "STROKE")
+```
+
+```{r}
+ggplot(stroke_dataset, aes(x = avg_glucose_level, fill = as.factor(stroke))) +
+  geom_histogram(position = "fill") + labs(fill = "STROKE") + facet_wrap(~gender)
+```
+`
+
+
+```{r}
+stroke_dataset %>% group_by(smoking_status, gender) %>% summarise( avg_age = mean(age))
+```
+
+
+```{r}
+stroke_dataset$diabetes <- "Prediabetes"
+stroke_dataset["diabetes"][stroke_dataset["avg_glucose_level"] <= 99] <- "Normal"
+stroke_dataset["diabetes"][stroke_dataset["avg_glucose_level"] >= 126] <- "Diabetes"
+```
+
+```{r}
+# count NA by Diabetes status
+stroke_dataset %>%
+  count(bmi, diabetes, gender) %>%
+  filter(is.na(bmi))
+```
+
+```{r}
+# calculate avg bmi for each diabetes level
+stroke_dataset %>%
+  group_by(diabetes, gender) %>%
+  summarise(Avg_bmi = mean(bmi, na.rm = TRUE))
+```
+
+```{r}
+# impute NA values
+stroke_dataset["bmi"][is.na(stroke_dataset["bmi"]) & stroke_dataset["diabetes"] == "Diabetes" & stroke_dataset["gender"] == "Female"] <- 31.94580
+
+stroke_dataset["bmi"][is.na(stroke_dataset["bmi"]) & stroke_dataset["diabetes"] == "Diabetes" & stroke_dataset["gender"] == "Male"] <- 30.92271
+
+stroke_dataset["bmi"][is.na(stroke_dataset["bmi"]) & stroke_dataset["diabetes"] == "Normal" & stroke_dataset["gender"] == "Female"] <- 28.59695
+
+stroke_dataset["bmi"][is.na(stroke_dataset["bmi"]) & stroke_dataset["diabetes"] == "Normal" & stroke_dataset["gender"] == "Male"] <- 28.12900	
+
+stroke_dataset["bmi"][is.na(stroke_dataset["bmi"]) & stroke_dataset["diabetes"] == "Prediabetes" & stroke_dataset["gender"] == "Female"] <- 28.06448
+
+stroke_dataset["bmi"][is.na(stroke_dataset["bmi"]) & stroke_dataset["diabetes"] == "Prediabetes" & stroke_dataset["gender"] == "Male"] <- 27.86495
+
+# drop diabetes column
+stroke_dataset <- stroke_dataset[, -12]
+```
+
+```{r}
+# check distribution of bmi
+ggplot(stroke_dataset, aes(x = bmi, fill = as.factor(stroke))) +
+  geom_histogram(position = "fill") +
+  labs(fill = "STROKE")
+```
+
+```{r}
+summary(stroke_dataset)
+```
+
+
+```{r}
+stroke_dataset$stroke <- as.numeric(stroke_dataset$stroke)
+```
+
+
+```{r}
+# normalize numerical variables
+stroke_dataset <- stroke_dataset %>%
+  mutate(age = rescale(age, to = 0:1), avg_glucose_level = rescale(avg_glucose_level, to = 0:1), bmi = rescale(bmi, to = 0:1))
+```
+
+```{r}
+stroke_dataset <- stroke_dataset %>% mutate_if(is.character, as.factor)
+
+col <- c("gender", "ever_married", "work_type", "Residence_type", "smoking_status")
+
+feature <- function(x) {
+  for (x in col) {
+    stroke_dataset <<- stroke_dataset %>%
+      mutate(dummy = 1) %>%
+      spread(key = x, value = dummy, fill = 0)
+  }
+}
+
+feature()
+```
+### Correlation 
+
+```{r}
+# calculate Correlation
+stroke_dataset_cor <- stroke_dataset %>% cor(method = "pearson", use = "pairwise.complete.obs")
+
+stroke_dataset_cor[, "stroke"]
+```
+```{r}
+corrplot(stroke_dataset_cor, method = "number", number.digits = 1, number.cex = 0.5, tl.cex = 0.5)
+```
+
+Linear Model (including multilinear model, poly model, improved LM)
+K-Nearest Neighbor classification 
+
+
+```{r}
+set.seed(1234)
+
+stroke_split <- initial_split(stroke_dataset, prop = 0.8)
+# train_data
+stroketrainset <- training(stroke_split)
+# test_data
+stroketestset <- testing(stroke_split)
+```
+
+### Linear Model
+
+```{r}
+# Base Linear model
+
+linear <- linear_reg(mode = "regression", engine = "lm")
+
+linear_fit <- linear %>%
+  fit(stroke ~ ., data = stroketrainset)
+
+print(linear_fit)
+```
+
+```{r}
+# check model performance
+linear_train <- linear_fit %>%
+  predict(new_data = stroketrainset) %>%
+  mutate(truth = stroketrainset$stroke)
+
+head(linear_train)
+```
+
+```{r}
+linear_train[, ".pred"][linear_train[, ".pred"] >= 0.1] <- 1
+linear_train[, ".pred"][linear_train[, ".pred"] < 0.1] <- 0
+
+head(linear_train)
+```
+
+```{r}
+# evaluate the model
+
+rsq_ml <- rsq(linear_train,
+  truth = truth,
+  estimate = .pred
+)
+
+rmse_ml <- yardstick::rmse(linear_train,
+  truth = truth,
+  estimate = .pred
+)
+
+rsq_ml
+rmse_ml
+```
+
+```{r}
+# Accuracy results
+linear_train %>% count(.pred, truth)
+```
+
+```{r}
+# Find variables with the most effect
+linear_fit %>%
+  tidy() %>%
+  arrange(desc(abs(estimate)))
+```
+
+```{r}
+poly_model <- linear %>%
+  fit(stroke ~ . + poly(age, 6) + poly(avg_glucose_level, 6) + children * age + heart_disease * age + poly(bmi, 6) + Never_worked * age, data = stroketrainset)
+
+summary(poly_model$fit)
+```
+
+```{r}
+# Use predict() function to generate test results for poly model
+poly_train <- poly_model %>%
+  predict(new_data = stroketrainset) %>%
+  mutate(truth = stroketrainset$stroke)
+
+head(poly_train)
+```
+
+```{r}
+poly_train[, ".pred"][poly_train[, ".pred"] >= 0.1] <- 1
+poly_train[, ".pred"][poly_train[, ".pred"] < 0.1] <- 0
+
+head(poly_train)
+```
+
+```{r}
+# evaluate the model
+
+rsq_poly <- rsq(poly_train,
+  truth = truth,
+  estimate = .pred
+)
+
+rmse_poly <- yardstick::rmse(poly_train,
+  truth = truth,
+  estimate = .pred
+)
+
+rsq_poly
+rmse_poly
+```
+
+```{r}
+# Accuracy results
+poly_train %>% count(.pred, truth)
+```
+
+
+
+```{r}
+# first we create a formula recipe
+glm_lm <-
+  formula(stroke ~ . + poly(age, 6) + poly(avg_glucose_level, 6) + children * age + heart_disease * age + poly(bmi, 6) + Never_worked * age)
+
+set.seed(111)
+# k-fold cross-validation
+folds <- vfold_cv(stroketrainset, v = 10)
+
+# define model
+
+tune_spec <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+# Grid workflow
+wf <- workflow() %>%
+  add_formula(glm_lm)
+
+# Define tuning values
+
+lambda_tune <- grid_regular(
+  levels = 100,
+  penalty(range = c(-2, 0.2))
+)
+
+mixture_tune <- grid_regular(
+  levels = 100,
+  mixture(range = c(0.25, 1))
+)
+
+mix_grid <- as.data.frame(c(lambda_tune, mixture_tune))
+
+set.seed(124)
+# define grid search
+grid <- tune_grid(
+  wf %>% add_model(tune_spec),
+  resamples = folds,
+  grid = mix_grid
+)
+
+show_best(grid, metric = "rmse")
+```
+
+```{r}
+glm_lm_fit <- linear_reg(mode = "regression", engine = "glmnet", penalty = 0.01227125, mixture = 0.2803030) %>%
+  fit(glm_lm, data = stroketrainset)
+
+lm_glm_train <- glm_lm_fit %>%
+  predict(new_data = stroketrainset) %>%
+  mutate(truth = stroketrainset$stroke)
+
+head(lm_glm_train)
+```
+
+```{r}
+lm_glm_train[, ".pred"][lm_glm_train[, ".pred"] >= 0.1] <- 1
+lm_glm_train[, ".pred"][lm_glm_train[, ".pred"] < 0.1] <- 0
+
+head(lm_glm_train)
+```
+
+```{r}
+# evaluate the model
+
+rsq_glmnet <- rsq(lm_glm_train,
+  truth = truth,
+  estimate = .pred
+)
+
+rmse_glmnet <- yardstick::rmse(lm_glm_train,
+  truth = truth,
+  estimate = .pred
+)
+
+rsq_glmnet
+rmse_glmnet
+```
+```{r}
+# Accuracy results
+lm_glm_train %>% count(.pred, truth)
+```
+
+Accuracy result is 0.825
+
+### K-Nearest Neighbor classfication  
+
+```{r}
+# Fitting KNN Model to training dataset
+knn_model <- knn(
+  train = stroketrainset,
+  test = stroketestset,
+  cl = stroketrainset$stroke,
+  k = 1
+)
+head(knn_model)
+```
+```{r}
+# Confusion Matrix
+cm <- table(stroketestset$stroke, knn_model)
+cm
+1 - sum(diag(cm)) / sum(cm)
+```
+Accuracy is 98.7% of testing set.
+
+```{r}
+# Tune parameter with caret package
+knnModel <- train(
+  stroke ~ .,
+  data = stroketrainset,
+  method = "knn",
+  trControl = trainControl(method = "cv"),
+  tuneGrid = data.frame(k = c(1:20))
+)
+```
+
+```{r}
+# Training Best Performing Model
+
+colnames(stroketrainset) <- make.names(colnames(stroketrainset))
+colnames(stroketestset) <- make.names(colnames(stroketestset))
+best_model <- knn3(stroke ~ .,
+  data = stroketrainset,
+  k = knnModel$bestTune$k
+)
+```
+
+
+
+## Task Three: Evaluate and select prediction models
+
+```{r}
+# Linear Model
+
+# to calculate accuracy
+Metrics::accuracy(linear_train$.pred, linear_train$truth)
+
+# to calculate recall
+Metrics::recall(linear_train$.pred, linear_train$truth)
+
+# to calculate precision
+Metrics::precision(linear_train$.pred, linear_train$truth)
+
+# to calculate f1_score
+Metrics::f1(linear_train$.pred, linear_train$truth)
+
+# to calculate auc
+Metrics::auc(linear_train$.pred, linear_train$truth)
+
+# to calculate rmse
+Metrics::rmse(linear_train$.pred, linear_train$truth)
+```
+
+```{r}
+# Poly Model
+
+# to calculate accuracy
+Metrics::accuracy(poly_train$.pred, poly_train$truth)
+
+# to calculate recall
+Metrics::recall(poly_train$.pred, poly_train$truth)
+
+# to calculate precision
+Metrics::precision(poly_train$.pred, poly_train$truth)
+
+# to calculate f1_score
+Metrics::f1(poly_train$.pred, poly_train$truth)
+
+# to calculate auc
+Metrics::auc(poly_train$.pred, poly_train$truth)
+
+# to calculate rmse
+Metrics::rmse(poly_train$.pred, poly_train$truth)
+```
+
+```{r}
+# glment Model
+
+# to calculate accuracy
+Metrics::accuracy(lm_glm_train$.pred, lm_glm_train$truth)
+
+# to calculate recall
+Metrics::recall(lm_glm_train$.pred, lm_glm_train$truth)
+
+# to calculate precision
+Metrics::precision(lm_glm_train$.pred, lm_glm_train$truth)
+
+# to calculate f1_score
+Metrics::f1(lm_glm_train$.pred, lm_glm_train$truth)
+
+# to calculate auc
+Metrics::auc(lm_glm_train$.pred, lm_glm_train$truth)
+
+# to calculate rmse
+Metrics::rmse(lm_glm_train$.pred, lm_glm_train$truth)
+```
+
+
+
+
+```{r}
+# Print the table
+kable(metrics_df, format = "markdown", col.names = c("Model", "Accuracy", "Recall", "Precision", "F1 Score", "AUC-ROC", "RMSE"))
+
+```
+
+
+
+```{r}
+saveRDS(best_model, "knn_model.rds")
+```
+
+
+
+```{r}
+# Load Dataset
+stroke_dataset <- read.csv("healthcare-dataset-stroke-data.csv")
+```
+
+
+```{r}
+# check data structure
+str(stroke_dataset)
+```
+
+# 1. We can see that stroke is the target variable and there is 9 predictor variables, id variable needs to be drop as it is not needed for prediction.
+
+```{r}
+stroke_dataset <- stroke_dataset[, -1]
+```
+
+
+# 2. Check Duplicates
+
+```{r}
+# check for duplicated rows
+sum(duplicated(stroke_dataset))
+```
+
+
+# 3. Clean NA values
+
+```{r}
+stroke_dataset$bmi[stroke_dataset$bmi == "N/A"] <- NA
+stroke_dataset[stroke_dataset == ""] <- NA
+stroke_dataset <- stroke_dataset %>% drop_na()
+colSums(is.na(stroke_dataset))
+```
+# 4. Convert Category Columns to Encoded Columns
+
+## A. Gender column:
+
+```{r}
+stroke_dataset %>% count(gender)
+```
+
+## B. ever_married column:
+
+```{r}
+stroke_dataset %>% count(ever_married)
+```
+## C. work_type column:
+```{r}
+stroke_dataset %>% count(work_type)
+```
+## D. Residence_type column:
+```{r}
+stroke_dataset %>% count(Residence_type)
+```
+## E. smoking_status column
+```{r}
+stroke_dataset %>% count(smoking_status)
+```
+
+
+```{r}
+# Convert 'ever_married', 'work_type', 'Residence_type', 'smoking_status' to factors
+stroke_dataset_modified = data.frame(stroke_dataset)
+
+# Diabetes Column
+stroke_dataset_modified$diabetesNormal[stroke_dataset_modified$avg_glucose_level <= 99] <- 1
+stroke_dataset_modified$diabetesPrediabetes[stroke_dataset_modified$avg_glucose_level > 99 & stroke_dataset_modified$avg_glucose_level < 126] <- 1
+stroke_dataset_modified$diabetesPatient[stroke_dataset_modified$avg_glucose_level >= 126] <- 1
+
+
+# Gender Column
+stroke_dataset_modified$genderMale[stroke_dataset_modified$gender == "Male"] <- 1
+stroke_dataset_modified$genderFemale[stroke_dataset_modified$gender == "Female"] <- 1
+stroke_dataset_modified$genderOther[stroke_dataset_modified$gender == "Other"] <- 1
+
+# Smoking Column
+stroke_dataset_modified$smokingsmokes[stroke_dataset_modified$smoking_status == "smokes"] <- 1
+stroke_dataset_modified$smokingneversmoked[stroke_dataset_modified$smoking_status == "never smoked"] <- 1
+stroke_dataset_modified$smokingformerlysmoked[stroke_dataset_modified$smoking_status == "formerly smoked"] <- 1
+stroke_dataset_modified$smokingunknown[stroke_dataset_modified$smoking_status == "Unknown"] <- 1
+
+# Work Type Column
+stroke_dataset_modified$work_typeGovt_job[stroke_dataset_modified$work_type == "Govt_job"] <- 1
+stroke_dataset_modified$work_typeNever_worked[stroke_dataset_modified$work_type == "Never_worked"] <- 1
+stroke_dataset_modified$work_typePrivate[stroke_dataset_modified$work_type == "Private"] <- 1
+stroke_dataset_modified$work_typeSelf[stroke_dataset_modified$work_type == "Self-employed"] <- 1
+stroke_dataset_modified$work_typechildren[stroke_dataset_modified$work_type == "children"] <- 1
+
+stroke_dataset_modified[is.na(stroke_dataset_modified)] <- 0
+
+# Ever Married Column
+stroke_dataset_modified$ever_married[stroke_dataset_modified$ever_married == "No"] <- 0
+stroke_dataset_modified$ever_married[stroke_dataset_modified$ever_married == "Yes"] <- 1
+
+# Residence type column
+
+stroke_dataset_modified$Residence_type[stroke_dataset_modified$Residence_type == "Rural"] <- 0
+stroke_dataset_modified$Residence_type[stroke_dataset_modified$Residence_type == "Urban"] <- 1
+
+# Correcting Data Types
+stroke_dataset_modified$age <- as.numeric(stroke_dataset_modified$age)
+stroke_dataset_modified$hypertension <- as.numeric(stroke_dataset_modified$hypertension)
+stroke_dataset_modified$heart_disease <- as.numeric(stroke_dataset_modified$heart_disease)
+stroke_dataset_modified$ever_married <- as.numeric(stroke_dataset_modified$ever_married)
+stroke_dataset_modified$Residence_type <- as.numeric(stroke_dataset_modified$Residence_type)
+stroke_dataset_modified$bmi <- as.numeric(stroke_dataset_modified$bmi)
+stroke_dataset_modified$stroke <- as.numeric(stroke_dataset_modified$stroke)
+
+# Remove the original categorical columns
+# stroke_dataset_encoded <- stroke_dataset_encoded[, -which(names(stroke_dataset_encoded) %in% c("gender", "work_type", "smoking_status", "avg_glucose_level"))]
+# Remove specified columns without using %in%
+columns_to_keep <- setdiff(names(stroke_dataset_modified), c("gender", "work_type", "smoking_status", "avg_glucose_level"))
+stroke_dataset_encoded <- stroke_dataset_modified[, columns_to_keep]
+
+# Print the data
+str(stroke_dataset_encoded)
+
+```
+
+# 5. Normalise the age and bmi column
+
+```{r}
+stroke_dataset_clean <- stroke_dataset_encoded %>%
+  mutate(age = rescale(age, to = 0:1), bmi = rescale(bmi, to = 0:1))
+
+
+```
+# 6. Check the correlation of values with the Stroke column
+
+```{r}
+
+stroke_dataset_cor <- stroke_dataset_clean %>% cor(method = "pearson", use = "pairwise.complete.obs")
+stroke_dataset_cor[, "stroke"]
+corrplot(stroke_dataset_cor, method = "number", number.digits = 1, number.cex = 0.5, tl.cex = 0.5)
+
+```
+
+We will build the following models:
+
+* Logistic regression model 
+* K-Nearest Neighbors model  
+* Linear SVM
+* Naive Bayes Classification
+* Simple Decision Tree Modelling
+* Random forest model
+* XGBoost
+
+First we will split the dataset then we try different prediction models.
+
+# 7. Splitting the data into Test and Train Sets
+
+```{r}
+
+stroke_dataset_processed = data.frame(stroke_dataset_clean)
+stroke_dataset_processed$stroke = factor(stroke_dataset_processed$stroke, levels = c(0,1))
+
+library(caTools)
+set.seed(123)
+split = sample.split(stroke_dataset_processed$stroke, SplitRatio = 0.75)
+training_set = subset(stroke_dataset_processed, split == TRUE)
+test_set = subset(stroke_dataset_processed, split == FALSE)
+
+
+#training_set[-7] = scale(training_set[-7])
+#test_set[-7] = scale(test_set[-7])
+
+# helper function to calculate Metrics
+
+calculate_metrics <- function(cm) {
+  # Returning metrics as a named list
+  metrics <- list(
+    accuracy = cm$overall["Accuracy"],
+    precision = cm$byClass["Precision"],
+    recall = cm$byClass["Recall"],
+    f1 = cm$byClass["F1"]
+  )
+
+  return(metrics)
+}
+
+calculate_metrics_raw <- function(conf_matrix) {
+  # Extracting values from confusion matrix
+  tp <- conf_matrix[4]
+  fp <- conf_matrix[3]
+  fn <- conf_matrix[2]
+  tn <- conf_matrix[1]
+
+  # Handling division by zero cases
+  precision_denom <- ifelse((tp + fp) == 0, 1, (tp + fp))
+  recall_denom <- ifelse((tp + fn) == 0, 1, (tp + fn))
+
+  # Calculating metrics
+  accuracy <- (tp + tn) / sum(conf_matrix)
+  precision <- tp / precision_denom
+  recall <- tp / recall_denom
+  f1 <- ifelse((precision + recall) == 0, 0, 2 * (precision * recall) / (precision + recall))
+
+  # Returning metrics as a named list
+  metrics <- list(
+    accuracy = accuracy,
+    precision = precision,
+    recall = recall,
+    f1 = f1
+  )
+
+  return(metrics)
+}
+
+
+
+```
+
+# 8. Train the Models
+
+## Define Validation Step
+```{r}
+
+trControl <- trainControl(method  = "repeatedcv", number  = 5, repeats = 3)
+
+```
+
+## A. Logistic Regression
+```{r}
+
+classifier = glm(formula = stroke ~ .,
+                 family = binomial,
+                 data = training_set)
+
+# Predicting the Test set results
+prob_pred = predict(classifier, type = 'response', newdata = test_set[-7])
+y_pred = ifelse(prob_pred >= 0.3, 1, 0)
+
+# Making the Confusion Matrix
+cm_logistic = table(test_set[, 7], y_pred > 0.35)
+
+metrics_logistic <- calculate_metrics_raw(cm_logistic)
+metrics_logistic
+```
+## B. KNN Model
+```{r}
+
+y_pred = knn(train = training_set[, -7],
+             test = test_set[, -7],
+             cl = training_set[, 7],
+             k = 2,
+             prob = TRUE)
+
+# Making the Confusion Matrix
+cm_knn = table(test_set[, 7], y_pred)
+
+metrics_knn <- calculate_metrics_raw(cm_knn)
+metrics_knn
+
+```
+## C. SVM
+```{r}
+
+library(e1071)
+
+
+classifier = svm(formula = stroke ~ .,
+                 data = training_set,
+                 type = 'C-classification',
+                 kernel = 'radial',
+                 gamma = 5)
+
+
+# Predicting the Test set results
+y_pred = predict(classifier, newdata = test_set[-7])
+
+# Making the Confusion Matrix
+cm_svm = table(test_set[, 7], y_pred)
+
+
+# Calculate metrics
+metrics_svm <- calculate_metrics_raw(cm_svm)
+metrics_svm
+
+
+```
+## D. Naive Bayes Classifier
+```{r}
+
+classifier = naiveBayes(x = training_set[-7],
+                        y = training_set$stroke)
+
+# Predicting the Test set results
+y_pred = predict(classifier, newdata = test_set[-7])
+
+# Making the Confusion Matrix
+cm_naive_bayes = table(test_set[, 7], y_pred)
+
+# Calculate metrics
+metrics_naive_bayes <- calculate_metrics_raw(cm_naive_bayes)
+
+# Display calculated metrics
+print(metrics_naive_bayes)
+
+
+```
+## E. Decision Tree Classifier
+
+```{r}
+library(rpart)
+decision_tree_model <- rpart(stroke ~ ., data = training_set, method = "class")
+
+# Print the decision tree
+print(decision_tree_model)
+
+# Make predictions on the test set
+predictions <- predict(decision_tree_model, newdata = test_set, type = "class")
+
+# Evaluate the performance
+cm_decision_tree <- confusionMatrix(predictions, test_set$stroke)
+
+# Calculate metrics
+metrics_decision_tree <- calculate_metrics(cm_decision_tree)
+
+# Display calculated metrics
+print(metrics_decision_tree)
+
+
+
+```
+## F. Random Forest Classifier
+
+```{r}
+library(randomForest)
+set.seed(1235)
+classifier = randomForest(x = training_set[-7],
+                          y = training_set$stroke,
+                          ntree = 2)
+
+# Predicting the Test set results
+y_pred = predict(classifier, newdata = test_set[-7])
+
+# Making the Confusion Matrix
+cm_random_forest = table(test_set[, 7], y_pred)
+
+# Calculate metrics
+metrics_random_forest <- calculate_metrics_raw(cm_random_forest)
+
+# Display calculated metrics
+print(metrics_random_forest)
+
+
+
+```
+
+## G. XgBoost Classifier
+```{r}
+
+# Set up the train control
+trControl <- trainControl(method = "repeatedcv", number = 5, repeats = 3)
+
+# Build the XGBoost model
+model_xgboost <- train(stroke ~ .,
+                       method = "xgbTree",
+                       trControl = trControl,
+                       metric = "Accuracy",
+                       data = training_set)
+
+# Make predictions on the test set
+predictions_xgboost <- predict(model_xgboost, newdata = test_set[-7])
+
+# Create confusion matrix
+cm_xgboost <- confusionMatrix(predictions_xgboost, test_set$stroke)
+
+# Calculate metrics
+metrics_xgboost <- calculate_metrics(cm_xgboost)
+
+# Display calculated metrics
+print(metrics_xgboost)
+
+
+```
+# 9. Metrics and Evaluation
+```{r}
+
+# Assuming you have stored the metrics in variables
+models <- c("Logistic Regression", "KNN", "SVM", "Naive Bayes", "Decision Tree", "Random Forest", "XGBoost")
+
+# Create a data frame with the metrics
+
+
+metrics_data <- data.frame(
+  Model = models,
+  Accuracy = c( metrics_logistic$accuracy, metrics_knn$accuracy, metrics_svm$accuracy ,metrics_naive_bayes$accuracy, metrics_decision_tree$accuracy, metrics_random_forest$accuracy, metrics_xgboost$accuracy),
+  
+  Precision = c(metrics_logistic$precision, metrics_knn$precision, metrics_svm$precision, metrics_naive_bayes$precision, metrics_decision_tree$precision, metrics_random_forest$precision, metrics_xgboost$precision),
+  
+  Recall = c(metrics_logistic$recall, metrics_knn$recall, metrics_svm$recall, metrics_naive_bayes$recall, metrics_decision_tree$recall, metrics_random_forest$recall, metrics_xgboost$recall),
+  
+  F1 = c(metrics_logistic$f1, metrics_knn$f1, metrics_svm$f1, metrics_naive_bayes$f1, metrics_decision_tree$f1, metrics_random_forest$f1, metrics_xgboost$f1)
+  
+)
+metrics_data
+
+
+
+```
